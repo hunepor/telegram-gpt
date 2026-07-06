@@ -40,6 +40,72 @@ python bot.py
 
 После запуска откройте своего бота в Telegram и отправьте ему сообщение.
 
+## Запуск в Docker
+
+Сначала создайте и заполните `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Соберите и запустите контейнер:
+
+```bash
+docker compose up -d --build
+```
+
+Посмотреть логи:
+
+```bash
+docker compose logs -f
+```
+
+Остановить бота:
+
+```bash
+docker compose down
+```
+
+Контейнер не открывает порты наружу: бот получает сообщения через Telegram polling.
+
+## Запуск через Apple containers
+
+Нужен Apple `container` CLI на Mac с Apple silicon и macOS 26. После установки один раз запустите system service:
+
+```bash
+container system start
+```
+
+Соберите образ:
+
+```bash
+bash scripts/apple-container-build.sh
+```
+
+Запустите бота:
+
+```bash
+bash scripts/apple-container-run.sh
+```
+
+Посмотреть логи:
+
+```bash
+bash scripts/apple-container-logs.sh
+```
+
+Остановить и удалить контейнер:
+
+```bash
+bash scripts/apple-container-stop.sh
+```
+
+Скрипты используют образ `telegram-gpt-bot:local`, контейнер `telegram-gpt` и env-файл `.env`. Их можно переопределить:
+
+```bash
+IMAGE_NAME=my-bot:dev CONTAINER_NAME=my-bot ENV_FILE=.env.local bash scripts/apple-container-run.sh
+```
+
 ## Структура проекта
 
 - `bot.py` - точка входа;
@@ -48,6 +114,7 @@ python bot.py
 - `tg_gpt_bot/memory.py` - режимы, история и сборка контекста;
 - `tg_gpt_bot/openai_memory.py` - сжатие старой истории в резюме;
 - `tg_gpt_bot/telegram_utils.py` - отправка длинных сообщений частями.
+- `scripts/apple-container-*.sh` - сборка и запуск через Apple `container`.
 
 ## Команды
 

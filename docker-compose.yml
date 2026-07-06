@@ -1,0 +1,7 @@
+services:
+  telegram-gpt:
+    build: .
+    image: telegram-gpt-bot:local
+    env_file:
+      - ${ENV_FILE:-.env}
+    restart: unless-stopped
