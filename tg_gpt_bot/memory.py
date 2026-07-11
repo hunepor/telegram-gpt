@@ -10,7 +10,7 @@ ChatMessage = dict[str, str]
 
 @dataclass
 class UserSession:
-    mode: str = MODE_NORMAL
+    mode: str = MODE_ECONOMY
     history: list[ChatMessage] = field(default_factory=list)
     summary: str = ""
 
@@ -28,7 +28,7 @@ def settings_for(session: UserSession, app_settings: AppSettings) -> ModeSetting
 
 def mode_text(session: UserSession) -> str:
     if session.mode == MODE_ECONOMY:
-        return "economy: короткий промпт, меньше истории, компактные ответы"
+        return "caveman: короткий промпт, меньше истории, компактные ответы"
 
     return "normal: обычные ответы и больше контекста"
 

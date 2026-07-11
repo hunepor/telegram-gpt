@@ -6,13 +6,13 @@ from dataclasses import dataclass
 
 DEFAULT_MODEL = "gpt-4.1-mini"
 MODE_NORMAL = "normal"
-MODE_ECONOMY = "economy"
+MODE_ECONOMY = "caveman"
 DEFAULT_SYSTEM_PROMPT = (
     "Ты полезный ассистент в Telegram. Отвечай понятно, дружелюбно и по делу. "
     "Если пользователь пишет на русском, отвечай на русском."
 )
 DEFAULT_ECONOMY_SYSTEM_PROMPT = (
-    "Ты полезный ассистент в Telegram. Отвечай максимально кратко и по делу. "
+    "Ты полезный ассистент в Telegram в режиме caveman. Отвечай максимально кратко и по делу. "
     "Не повторяй вопрос, не добавляй вступления. Обычно хватает 1-4 коротких предложений."
 )
 SUMMARY_SYSTEM_PROMPT = (

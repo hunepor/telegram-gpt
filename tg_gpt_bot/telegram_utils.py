@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import logging
+
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
 
@@ -31,4 +35,8 @@ def split_for_telegram(text: str, limit: int = MAX_TELEGRAM_MESSAGE_LENGTH) -> l
 
 async def answer_long(message: Message, text: str) -> None:
     for chunk in split_for_telegram(text):
-        await message.answer(chunk)
+        try:
+            await message.answer(chunk, parse_mode=ParseMode.MARKDOWN)
+        except TelegramBadRequest:
+            logging.exception("Telegram rejected Markdown formatting")
+            await message.answer(chunk)
