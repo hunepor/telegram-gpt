@@ -155,6 +155,8 @@ IMAGE_NAME=my-bot:dev CONTAINER_NAME=my-bot ENV_FILE=.env.local bash scripts/app
 
 ## Команды
 
+При запуске бот автоматически добавляет эти команды в меню Telegram:
+
 - `/start` - начать диалог заново;
 - `/help` - показать подсказку;
 - `/reset` - очистить память диалога;
