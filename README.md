@@ -81,6 +81,59 @@ Guest-вызов можно отправить ответом на чужое с
 /ask@okivajbot напиши функцию сортировки пузырьком на Python
 ```
 
+## Запуск на VPS без Docker
+
+Для Ubuntu или Debian сначала установите Git и клонируйте репозиторий в `/opt`:
+
+```bash
+sudo apt update
+sudo apt install -y git
+sudo mkdir -p /opt/telegram-gpt
+sudo chown "$USER:$USER" /opt/telegram-gpt
+git clone https://github.com/hunepor/telegram-gpt.git /opt/telegram-gpt
+cd /opt/telegram-gpt
+```
+
+Запустите установщик. Он создаст отдельного пользователя `telegram-gpt`, Python-окружение,
+файл настроек в `/etc/telegram-gpt/bot.env` и сервис `systemd`:
+
+```bash
+sudo bash scripts/vps-install.sh
+```
+
+Заполните токены в созданном файле:
+
+```bash
+sudo nano /etc/telegram-gpt/bot.env
+```
+
+Запустите бота и включите автоматический старт после перезагрузки VPS:
+
+```bash
+sudo systemctl enable --now telegram-gpt
+```
+
+Посмотреть логи:
+
+```bash
+sudo journalctl -u telegram-gpt -f
+```
+
+Перезапустить или остановить:
+
+```bash
+sudo systemctl restart telegram-gpt
+sudo systemctl stop telegram-gpt
+```
+
+Обновление после новых коммитов:
+
+```bash
+sudo -u telegram-gpt git -C /opt/telegram-gpt pull --ff-only
+sudo -u telegram-gpt /opt/telegram-gpt/.venv/bin/pip install -r /opt/telegram-gpt/requirements.txt
+sudo systemctl restart telegram-gpt
+```
+
 ## Запуск в Docker
 
 Сначала создайте и заполните `.env`:
@@ -162,6 +215,8 @@ IMAGE_NAME=my-bot:dev CONTAINER_NAME=my-bot ENV_FILE=.env.local bash scripts/app
 - `tg_gpt_bot/openai_memory.py` - сжатие старой истории в резюме;
 - `tg_gpt_bot/telegram_utils.py` - отправка длинных сообщений частями.
 - `scripts/apple-container-*.sh` - сборка и запуск через Apple `container`.
+- `scripts/vps-install.sh` - установка на Ubuntu/Debian через `systemd`.
+- `deploy/telegram-gpt.service` - unit-файл для постоянной работы на VPS.
 
 ## Команды
 
