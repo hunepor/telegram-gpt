@@ -83,20 +83,35 @@ def remove_bot_mention(message: Message, bot_username: str, bot_id: int) -> tupl
     return mentioned, cleaned_text
 
 
-def ask_prompt(message: Message, command_args: str | None) -> str:
-    args = (command_args or "").strip()
+def replied_text(message: Message) -> str:
     replied_message = message.reply_to_message
-    replied_text = ""
     if replied_message:
-        replied_text = (replied_message.text or replied_message.caption or "").strip()
+        text = getattr(replied_message, "text", None)
+        caption = getattr(replied_message, "caption", None)
+        if text or caption:
+            return (text or caption).strip()
 
-    if replied_text and args:
-        return f"Сообщение пользователя:\n{replied_text}\n\nЗадача:\n{args}"
+    if message.quote:
+        return message.quote.text.strip()
 
-    if replied_text:
-        return f"Ответь на сообщение пользователя:\n{replied_text}"
+    return ""
 
-    return args
+
+def contextual_prompt(instruction: str, context: str) -> str:
+    instruction = instruction.strip()
+    context = context.strip()
+
+    if context and instruction:
+        return f"Сообщение пользователя:\n{context}\n\nЗадача:\n{instruction}"
+
+    if context:
+        return f"Ответь на сообщение пользователя:\n{context}"
+
+    return instruction
+
+
+def ask_prompt(message: Message, command_args: str | None) -> str:
+    return contextual_prompt(command_args or "", replied_text(message))
 
 
 def guest_result(message: Message, text: str, parse_mode: ParseMode | None) -> InlineQueryResultArticle:
@@ -307,7 +322,8 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
         if not username:
             return
 
-        _, user_text = remove_bot_mention(message, username, current_bot_id)
+        _, instruction = remove_bot_mention(message, username, current_bot_id)
+        user_text = contextual_prompt(instruction, replied_text(message))
         if not user_text:
             await answer_guest(message, f"Напишите вопрос после @{username}.")
             return
