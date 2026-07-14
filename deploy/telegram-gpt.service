@@ -10,11 +10,14 @@ Group=telegram-gpt
 WorkingDirectory=/opt/telegram-gpt
 EnvironmentFile=/etc/telegram-gpt/bot.env
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=STATE_DB_PATH=/var/lib/telegram-gpt/bot.db
 ExecStart=/opt/telegram-gpt/.venv/bin/python /opt/telegram-gpt/bot.py
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=20
 UMask=0077
+StateDirectory=telegram-gpt
+StateDirectoryMode=0700
 
 NoNewPrivileges=true
 PrivateTmp=true

@@ -9,9 +9,16 @@ from aiogram.enums import ChatAction, ChatType, MessageEntityType, ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.filters.command import CommandObject
-from aiogram.types import InlineQueryResultArticle, InputTextMessageContent, Message
+from aiogram.types import (
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    LabeledPrice,
+    Message,
+    PreCheckoutQuery,
+)
 from openai import AsyncOpenAI, OpenAIError
 
+from .billing import PAYMENT_CURRENCY, BillingService, ReserveResult, payment_payload
 from .config import AppSettings, MODE_ECONOMY, MODE_NORMAL
 from .images import ImageInput, download_photo_as_data_url, message_with_photo
 from .memory import (
@@ -27,6 +34,20 @@ from .telegram_utils import answer_long, split_for_telegram
 
 GROUP_CHAT_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP}
 DEFAULT_IMAGE_PROMPT = "Опиши изображение."
+
+
+def request_kind(image_input: ImageInput | None) -> str:
+    if image_input:
+        return "image"
+
+    return "text"
+
+
+def request_cost(app_settings: AppSettings, image_input: ImageInput | None) -> int:
+    if image_input:
+        return app_settings.image_request_credits
+
+    return app_settings.text_request_credits
 
 
 def session_key(message: Message) -> int:
@@ -47,6 +68,16 @@ def guest_session_key(message: Message) -> int:
         return message.guest_bot_caller_user.id
 
     return session_key(message)
+
+
+def payer_user_id(message: Message) -> int | None:
+    if message.guest_bot_caller_user:
+        return message.guest_bot_caller_user.id
+
+    if message.from_user:
+        return message.from_user.id
+
+    return None
 
 
 def is_reply_to_bot(message: Message, bot_id: int) -> bool:
@@ -131,6 +162,49 @@ def prompt_for_request(user_text: str, image_input: ImageInput | None) -> str:
     return ""
 
 
+def private_buy_text(bot_username: str | None) -> str:
+    if bot_username:
+        return f"Пополнить баланс можно в личке: https://t.me/{bot_username}?start=buy"
+
+    return "Пополнить баланс можно командой /buy в личке с ботом."
+
+
+def payment_required_text(
+    balance: int,
+    cost: int,
+    bot_username: str | None,
+) -> str:
+    return (
+        f"Нужна оплата. Этот запрос стоит {cost} кредит(ов), "
+        f"на балансе {balance}.\n"
+        f"{private_buy_text(bot_username)}"
+    )
+
+
+def terms_text(app_settings: AppSettings) -> str:
+    return (
+        "Условия оплаты:\n"
+        f"- {app_settings.stars_price} Stars дают {app_settings.credits_per_purchase} кредитов.\n"
+        f"- Текстовый запрос стоит {app_settings.text_request_credits} кредит(ов).\n"
+        f"- Запрос с картинкой стоит {app_settings.image_request_credits} кредит(ов).\n"
+        "- Кредиты используются только внутри этого бота и не являются валютой.\n"
+        "- Доступ выдаётся после успешной оплаты Telegram Stars.\n"
+        "- По вопросам платежей используйте /paysupport."
+    )
+
+
+def target_user_id(message: Message, command: CommandObject) -> int | None:
+    if command.args:
+        raw_user_id = command.args.split()[0]
+        if raw_user_id.isdigit():
+            return int(raw_user_id)
+
+    if message.reply_to_message and message.reply_to_message.from_user:
+        return message.reply_to_message.from_user.id
+
+    return None
+
+
 def guest_result(message: Message, text: str, parse_mode: ParseMode | None) -> InlineQueryResultArticle:
     chunk = split_for_telegram(text)[0]
     return InlineQueryResultArticle(
@@ -154,6 +228,7 @@ async def answer_guest(message: Message, text: str) -> None:
 def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> Dispatcher:
     dp = Dispatcher()
     sessions: defaultdict[int, UserSession] = defaultdict(UserSession)
+    billing = BillingService(app_settings)
     bot_username: str | None = None
     bot_id: int | None = None
 
@@ -166,6 +241,87 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             bot_username = me.username
 
         return bot_id, bot_username
+
+    async def send_buy_invoice(message: Message, bot: Bot) -> None:
+        if not message.from_user:
+            await message.answer("Не могу определить пользователя для оплаты.")
+            return
+
+        if not billing.enabled:
+            await message.answer("Оплата сейчас выключена, доступ свободный.")
+            return
+
+        if await billing.has_free_access(message.from_user.id):
+            await message.answer("У вас бесплатный доступ, покупать кредиты не нужно.")
+            return
+
+        if message.chat.type != ChatType.PRIVATE:
+            _, username = await cache_bot_profile(bot)
+            await message.answer(private_buy_text(username))
+            return
+
+        credits = app_settings.credits_per_purchase
+        stars = app_settings.stars_price
+        await message.answer_invoice(
+            title=f"{credits} кредитов",
+            description=(
+                f"Пакет для запросов к боту. Текстовый запрос: "
+                f"{app_settings.text_request_credits} кредит(ов), "
+                f"запрос с картинкой: {app_settings.image_request_credits} кредит(ов)."
+            ),
+            payload=payment_payload(app_settings),
+            provider_token="",
+            currency=PAYMENT_CURRENCY,
+            prices=[LabeledPrice(label=f"{credits} кредитов", amount=stars)],
+            start_parameter="buy",
+        )
+
+    async def reserve_request(
+        message: Message,
+        bot: Bot,
+        user_text: str,
+        image_input: ImageInput | None,
+    ) -> ReserveResult | None:
+        user_id = payer_user_id(message)
+        if user_id is None:
+            await message.answer("Не могу определить пользователя для проверки доступа.")
+            return None
+
+        result = await billing.reserve(
+            user_id=user_id,
+            cost=request_cost(app_settings, image_input),
+            kind=request_kind(image_input),
+            prompt=user_text,
+        )
+        if result.allowed:
+            return result
+
+        _, username = await cache_bot_profile(bot)
+        await message.answer(payment_required_text(result.balance, result.cost, username))
+        return None
+
+    async def reserve_guest_request(
+        message: Message,
+        user_text: str,
+        image_input: ImageInput | None,
+        bot_username: str | None,
+    ) -> ReserveResult | None:
+        user_id = payer_user_id(message)
+        if user_id is None:
+            await answer_guest(message, "Не могу определить пользователя для проверки доступа.")
+            return None
+
+        result = await billing.reserve(
+            user_id=user_id,
+            cost=request_cost(app_settings, image_input),
+            kind=request_kind(image_input),
+            prompt=user_text,
+        )
+        if result.allowed:
+            return result
+
+        await answer_guest(message, payment_required_text(result.balance, result.cost, bot_username))
+        return None
 
     async def generate_answer(
         user_text: str,
@@ -243,12 +399,20 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
         user_text: str,
         image_input: ImageInput | None = None,
     ) -> None:
+        access = await reserve_request(message, bot, user_text, image_input)
+        if access is None:
+            return
+
         session = sessions[session_key(message)]
         await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
         try:
             answer = await generate_answer(user_text, session, image_input)
         except OpenAIError:
+            if access.charged:
+                user_id = payer_user_id(message)
+                if user_id is not None:
+                    await billing.refund(user_id, access.cost, request_kind(image_input))
             logging.exception("OpenAI API error")
             await message.answer(
                 "Не получилось получить ответ от ChatGPT. "
@@ -256,6 +420,10 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             )
             return
         except Exception:
+            if access.charged:
+                user_id = payer_user_id(message)
+                if user_id is not None:
+                    await billing.refund(user_id, access.cost, request_kind(image_input))
             logging.exception("Unexpected bot error")
             await message.answer("Что-то пошло не так. Попробуйте еще раз.")
             return
@@ -263,7 +431,7 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
         await answer_long(message, answer)
 
     @dp.message(CommandStart())
-    async def start(message: Message) -> None:
+    async def start(message: Message, command: CommandObject, bot: Bot) -> None:
         sessions[session_key(message)].clear_memory()
 
         await message.answer(
@@ -271,6 +439,8 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             "Напишите сообщение, и я отвечу. Режим caveman включен по умолчанию. "
             "Команда /normal включает обычный режим, а /reset очищает память диалога."
         )
+        if command.args == "buy":
+            await send_buy_invoice(message, bot)
 
     @dp.message(Command("help"))
     async def help_command(message: Message) -> None:
@@ -283,8 +453,143 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             "/normal - вернуться к обычному режиму\n"
             "/mode - показать текущий режим\n"
             "/ask вопрос - задать вопрос или обработать reply, включая фото\n"
+            "/buy - купить кредиты за Telegram Stars\n"
+            "/balance - показать баланс кредитов\n"
+            "/terms - условия оплаты\n"
+            "/paysupport - поддержка по оплатам\n"
+            "/id - показать ваш Telegram user id\n"
             "/help - показать подсказку"
         )
+
+    @dp.message(Command("buy"))
+    async def buy(message: Message, bot: Bot) -> None:
+        await send_buy_invoice(message, bot)
+
+    @dp.message(Command("balance"))
+    async def balance(message: Message) -> None:
+        user_id = payer_user_id(message)
+        if user_id is None:
+            await message.answer("Не могу определить пользователя.")
+            return
+
+        if not billing.enabled:
+            await message.answer("Оплата сейчас выключена, доступ свободный.")
+            return
+
+        if await billing.has_free_access(user_id):
+            await message.answer("У вас бесплатный доступ.")
+            return
+
+        credits = await billing.get_balance(user_id)
+        await message.answer(f"Баланс: {credits} кредит(ов).")
+
+    @dp.message(Command("terms"))
+    async def terms(message: Message) -> None:
+        await message.answer(terms_text(app_settings))
+
+    @dp.message(Command("paysupport"))
+    async def paysupport(message: Message) -> None:
+        await message.answer(app_settings.payment_support_text)
+
+    @dp.message(Command("id"))
+    async def show_id(message: Message) -> None:
+        user_id = payer_user_id(message)
+        if user_id is None:
+            await message.answer("Не могу определить ваш Telegram user id.")
+            return
+
+        await message.answer(f"Ваш Telegram user id: {user_id}")
+
+    @dp.message(Command("allow"))
+    async def allow(message: Message, command: CommandObject) -> None:
+        if not message.from_user or not billing.is_admin(message.from_user.id):
+            await message.answer("Эта команда доступна только администратору.")
+            return
+
+        user_id = target_user_id(message, command)
+        if user_id is None:
+            await message.answer("Укажите Telegram user id или ответьте командой на сообщение.")
+            return
+
+        await billing.add_free_user(user_id, f"added by {message.from_user.id}")
+        await message.answer(f"Пользователь {user_id} добавлен в бесплатный список.")
+
+    @dp.message(Command("unallow"))
+    async def unallow(message: Message, command: CommandObject) -> None:
+        if not message.from_user or not billing.is_admin(message.from_user.id):
+            await message.answer("Эта команда доступна только администратору.")
+            return
+
+        user_id = target_user_id(message, command)
+        if user_id is None:
+            await message.answer("Укажите Telegram user id или ответьте командой на сообщение.")
+            return
+
+        await billing.remove_free_user(user_id)
+        await message.answer(f"Пользователь {user_id} удалён из бесплатного списка.")
+
+    @dp.message(Command("freeusers"))
+    async def freeusers(message: Message) -> None:
+        if not message.from_user or not billing.is_admin(message.from_user.id):
+            await message.answer("Эта команда доступна только администратору.")
+            return
+
+        users = await billing.list_free_users()
+        if not users:
+            await message.answer("Бесплатный список пуст.")
+            return
+
+        lines = ["Бесплатный список:"]
+        lines.extend(f"- {item.user_id} ({item.note})" for item in users)
+        await message.answer("\n".join(lines))
+
+    @dp.pre_checkout_query()
+    async def pre_checkout(query: PreCheckoutQuery) -> None:
+        if not billing.validate_payment(
+            payload=query.invoice_payload,
+            currency=query.currency,
+            total_amount=query.total_amount,
+        ):
+            await query.answer(
+                ok=False,
+                error_message="Не удалось подтвердить параметры оплаты. Попробуйте создать счёт заново.",
+            )
+            return
+
+        await query.answer(ok=True)
+
+    @dp.message(F.successful_payment)
+    async def successful_payment(message: Message) -> None:
+        if not message.from_user or not message.successful_payment:
+            return
+
+        payment = message.successful_payment
+        if not billing.validate_payment(
+            payload=payment.invoice_payload,
+            currency=payment.currency,
+            total_amount=payment.total_amount,
+        ):
+            await message.answer(
+                "Оплата получена, но параметры отличаются от текущего пакета. "
+                "Напишите в /paysupport."
+            )
+            return
+
+        result = await billing.record_payment(
+            user_id=message.from_user.id,
+            charge_id=payment.telegram_payment_charge_id,
+            payload=payment.invoice_payload,
+            stars=payment.total_amount,
+            credits=app_settings.credits_per_purchase,
+        )
+        if result.inserted:
+            await message.answer(
+                f"Оплата получена. Начислено {app_settings.credits_per_purchase} кредитов.\n"
+                f"Баланс: {result.balance} кредит(ов)."
+            )
+            return
+
+        await message.answer(f"Этот платёж уже был учтён. Баланс: {result.balance} кредит(ов).")
 
     @dp.message(Command("reset"))
     async def reset(message: Message) -> None:
@@ -380,10 +685,18 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             await answer_guest(message, f"Напишите вопрос после @{username}.")
             return
 
+        access = await reserve_guest_request(message, user_text, image_input, username)
+        if access is None:
+            return
+
         session = sessions[guest_session_key(message)]
         try:
             answer = await generate_answer(user_text, session, image_input)
         except OpenAIError:
+            if access.charged:
+                user_id = payer_user_id(message)
+                if user_id is not None:
+                    await billing.refund(user_id, access.cost, request_kind(image_input))
             logging.exception("OpenAI API error for guest query")
             await answer_guest(
                 message,
@@ -391,6 +704,10 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             )
             return
         except Exception:
+            if access.charged:
+                user_id = payer_user_id(message)
+                if user_id is not None:
+                    await billing.refund(user_id, access.cost, request_kind(image_input))
             logging.exception("Unexpected guest bot error")
             await answer_guest(message, "Что-то пошло не так. Попробуйте еще раз.")
             return

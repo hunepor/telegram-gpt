@@ -43,6 +43,15 @@ class AppSettings:
     summary_max_chars: int
     summary_max_output_tokens: int
     image_detail: str
+    payments_enabled: bool
+    state_db_path: str
+    admin_user_ids: frozenset[int]
+    free_user_ids: frozenset[int]
+    credits_per_purchase: int
+    stars_price: int
+    text_request_credits: int
+    image_request_credits: int
+    payment_support_text: str
 
 
 def required_env(name: str) -> str:
@@ -89,6 +98,25 @@ def env_choice(name: str, default: str, choices: set[str]) -> str:
     return value
 
 
+def env_user_ids(name: str) -> frozenset[int]:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return frozenset()
+
+    user_ids: set[int] = set()
+    for item in raw_value.replace(";", ",").replace(" ", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+
+        try:
+            user_ids.add(int(item))
+        except ValueError as exc:
+            raise RuntimeError(f"Переменная {name} должна содержать Telegram user id") from exc
+
+    return frozenset(user_ids)
+
+
 def load_settings() -> AppSettings:
     model = os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
 
@@ -113,4 +141,16 @@ def load_settings() -> AppSettings:
         summary_max_chars=env_int("SUMMARY_MAX_CHARS", 900),
         summary_max_output_tokens=env_int("SUMMARY_MAX_OUTPUT_TOKENS", 220),
         image_detail=env_choice("IMAGE_DETAIL", "low", {"auto", "high", "low"}),
+        payments_enabled=env_bool("PAYMENTS_ENABLED", False),
+        state_db_path=os.getenv("STATE_DB_PATH", "bot-state.sqlite3"),
+        admin_user_ids=env_user_ids("ADMIN_USER_IDS"),
+        free_user_ids=env_user_ids("FREE_USER_IDS"),
+        credits_per_purchase=env_int("CREDITS_PER_PURCHASE", 50),
+        stars_price=env_int("STARS_PRICE", 50),
+        text_request_credits=env_int("TEXT_REQUEST_CREDITS", 1),
+        image_request_credits=env_int("IMAGE_REQUEST_CREDITS", 2),
+        payment_support_text=os.getenv(
+            "PAYMENT_SUPPORT_TEXT",
+            "По вопросам оплат напишите владельцу бота.",
+        ),
     )

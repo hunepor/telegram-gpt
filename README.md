@@ -9,6 +9,8 @@
 - принимает гарантированно доставляемую в Privacy Mode команду `/ask вопрос`;
 - помнит последние сообщения в рамках запущенного процесса;
 - по умолчанию работает в `caveman`-режиме;
+- умеет принимать оплату Telegram Stars за кредиты запросов;
+- хранит баланс, платежи и бесплатный список в SQLite;
 - сжимает старую историю в короткое резюме;
 - очищает память командой `/reset`;
 - разбивает длинные ответы на несколько сообщений Telegram.
@@ -142,6 +144,9 @@ sudo -u telegram-gpt /opt/telegram-gpt/.venv/bin/pip install -r /opt/telegram-gp
 sudo systemctl restart telegram-gpt
 ```
 
+База балансов и платежей хранится в `/var/lib/telegram-gpt/bot.db`. Каталог создаётся
+через `systemd` и не удаляется при обновлении кода.
+
 ## Запуск в Docker
 
 Сначала создайте и заполните `.env`:
@@ -169,6 +174,7 @@ docker compose down
 ```
 
 Контейнер не открывает порты наружу: бот получает сообщения через Telegram polling.
+Баланс и платежи хранятся в Docker volume `telegram-gpt-data`.
 
 ## Запуск через Apple containers
 
@@ -214,10 +220,13 @@ bash scripts/apple-container-rerun.sh
 IMAGE_NAME=my-bot:dev CONTAINER_NAME=my-bot ENV_FILE=.env.local bash scripts/apple-container-run.sh
 ```
 
+Apple `container`-скрипты хранят SQLite-базу в volume `telegram-gpt-data`.
+
 ## Структура проекта
 
 - `bot.py` - точка входа;
 - `tg_gpt_bot/config.py` - настройки из `.env`;
+- `tg_gpt_bot/billing.py` - баланс, платежи Telegram Stars и бесплатный список в SQLite;
 - `tg_gpt_bot/handlers.py` - команды и обработчики Telegram;
 - `tg_gpt_bot/memory.py` - режимы, история и сборка контекста;
 - `tg_gpt_bot/openai_memory.py` - сжатие старой истории в резюме;
@@ -237,7 +246,12 @@ IMAGE_NAME=my-bot:dev CONTAINER_NAME=my-bot ENV_FILE=.env.local bash scripts/app
 - `/economy` - то же самое, что `/caveman`;
 - `/normal` - вернуться к обычному режиму;
 - `/mode` - показать текущий режим;
-- `/ask вопрос` - задать вопрос или обработать сообщение/фото через reply, в том числе с Privacy Mode.
+- `/ask вопрос` - задать вопрос или обработать сообщение/фото через reply, в том числе с Privacy Mode;
+- `/buy` - купить кредиты за Telegram Stars;
+- `/balance` - показать баланс кредитов;
+- `/terms` - условия оплаты;
+- `/paysupport` - поддержка по оплатам;
+- `/id` - показать ваш Telegram user id.
 
 ## Настройки
 
@@ -252,6 +266,51 @@ OPENAI_MODEL=gpt-4.1-mini
 ```env
 IMAGE_DETAIL=low
 ```
+
+## Оплата Telegram Stars
+
+Оплата выключена по умолчанию, чтобы обновление не заблокировало существующий запуск.
+Чтобы включить платный режим, добавьте в `.env` или `/etc/telegram-gpt/bot.env`:
+
+```env
+PAYMENTS_ENABLED=true
+ADMIN_USER_IDS=123456789
+STARS_PRICE=50
+CREDITS_PER_PURCHASE=50
+TEXT_REQUEST_CREDITS=1
+IMAGE_REQUEST_CREDITS=2
+```
+
+`ADMIN_USER_IDS` - это Telegram user id владельцев, которые могут управлять
+бесплатным списком. Узнать свой id можно командой `/id`.
+
+Бесплатный список хранится в SQLite. Первично его можно заполнить через `.env`:
+
+```env
+FREE_USER_IDS=123456789,987654321
+```
+
+Эти id будут добавлены в БД при запуске. Дальше администратор может управлять
+списком командами:
+
+```text
+/allow 123456789
+/unallow 123456789
+/freeusers
+```
+
+Также `/allow` и `/unallow` можно отправить ответом на сообщение пользователя.
+
+Когда платный режим включён:
+
+- пользователи из бесплатного списка и админы пользуются ботом бесплатно;
+- остальные покупают кредиты через `/buy`;
+- текстовый запрос списывает `TEXT_REQUEST_CREDITS`;
+- запрос с картинкой списывает `IMAGE_REQUEST_CREDITS`;
+- при ошибке OpenAI списанный кредит возвращается.
+
+Для цифровых товаров и услуг Telegram требует оплату через Stars (`XTR`). Бот
+также отвечает на `/terms` и `/paysupport`, что нужно для нормального платёжного UX.
 
 И системную инструкцию:
 

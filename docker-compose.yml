@@ -4,4 +4,11 @@ services:
     image: telegram-gpt-bot:local
     env_file:
       - ${ENV_FILE:-.env}
+    environment:
+      STATE_DB_PATH: /data/bot.db
+    volumes:
+      - telegram-gpt-data:/data
     restart: unless-stopped
+
+volumes:
+  telegram-gpt-data:
