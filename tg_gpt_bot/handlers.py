@@ -13,6 +13,7 @@ from aiogram.types import InlineQueryResultArticle, InputTextMessageContent, Mes
 from openai import AsyncOpenAI, OpenAIError
 
 from .config import AppSettings, MODE_ECONOMY, MODE_NORMAL
+from .images import ImageInput, download_photo_as_data_url, message_with_photo
 from .memory import (
     UserSession,
     build_input_messages,
@@ -25,6 +26,7 @@ from .telegram_utils import answer_long, split_for_telegram
 
 
 GROUP_CHAT_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP}
+DEFAULT_IMAGE_PROMPT = "Опиши изображение."
 
 
 def session_key(message: Message) -> int:
@@ -59,10 +61,10 @@ def remove_text_fragment(text: str, fragment: str) -> str:
 
 
 def remove_bot_mention(message: Message, bot_username: str, bot_id: int) -> tuple[bool, str]:
-    text = message.text or ""
+    text = message.text or message.caption or ""
     target_mention = f"@{bot_username}".lower()
 
-    for entity in message.entities or []:
+    for entity in message.entities or message.caption_entities or []:
         if (
             entity.type == MessageEntityType.TEXT_MENTION
             and entity.user
@@ -97,6 +99,10 @@ def replied_text(message: Message) -> str:
     return ""
 
 
+def message_text(message: Message) -> str:
+    return (message.text or message.caption or "").strip()
+
+
 def contextual_prompt(instruction: str, context: str) -> str:
     instruction = instruction.strip()
     context = context.strip()
@@ -112,6 +118,17 @@ def contextual_prompt(instruction: str, context: str) -> str:
 
 def ask_prompt(message: Message, command_args: str | None) -> str:
     return contextual_prompt(command_args or "", replied_text(message))
+
+
+def prompt_for_request(user_text: str, image_input: ImageInput | None) -> str:
+    user_text = user_text.strip()
+    if user_text:
+        return user_text
+
+    if image_input:
+        return DEFAULT_IMAGE_PROMPT
+
+    return ""
 
 
 def guest_result(message: Message, text: str, parse_mode: ParseMode | None) -> InlineQueryResultArticle:
@@ -150,9 +167,25 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
 
         return bot_id, bot_username
 
-    async def generate_answer(user_text: str, session: UserSession) -> str:
+    async def generate_answer(
+        user_text: str,
+        session: UserSession,
+        image_input: ImageInput | None = None,
+    ) -> str:
         mode_settings = settings_for(session, app_settings)
         input_messages = build_input_messages(session, mode_settings, user_text)
+        if image_input:
+            input_messages[-1] = {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": user_text},
+                    {
+                        "type": "input_image",
+                        "image_url": image_input.data_url,
+                        "detail": app_settings.image_detail,
+                    },
+                ],
+            }
 
         response = await openai_client.responses.create(
             model=app_settings.model,
@@ -197,12 +230,24 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
 
         return answer
 
-    async def respond_to_message(message: Message, bot: Bot, user_text: str) -> None:
+    async def image_from_message(message: Message, bot: Bot) -> ImageInput | None:
+        image_message = message_with_photo(message)
+        if not image_message:
+            return None
+
+        return await download_photo_as_data_url(bot, image_message)
+
+    async def respond_to_message(
+        message: Message,
+        bot: Bot,
+        user_text: str,
+        image_input: ImageInput | None = None,
+    ) -> None:
         session = sessions[session_key(message)]
         await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
         try:
-            answer = await generate_answer(user_text, session)
+            answer = await generate_answer(user_text, session, image_input)
         except OpenAIError:
             logging.exception("OpenAI API error")
             await message.answer(
@@ -237,7 +282,7 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             "/economy - то же самое, что /caveman\n"
             "/normal - вернуться к обычному режиму\n"
             "/mode - показать текущий режим\n"
-            "/ask вопрос - задать вопрос или ответить командой на сообщение\n"
+            "/ask вопрос - задать вопрос или обработать reply, включая фото\n"
             "/help - показать подсказку"
         )
 
@@ -279,23 +324,22 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
 
     @dp.message(Command("ask"))
     async def ask(message: Message, command: CommandObject, bot: Bot) -> None:
-        user_text = ask_prompt(message, command.args)
+        image_input = await image_from_message(message, bot)
+        user_text = prompt_for_request(ask_prompt(message, command.args), image_input)
         if not user_text:
             await message.answer(
-                "Добавьте вопрос после команды или отправьте /ask ответом на текстовое сообщение."
+                "Добавьте вопрос после команды или отправьте /ask ответом на текст или фото."
             )
             return
 
-        await respond_to_message(message, bot, user_text)
+        await respond_to_message(message, bot, user_text, image_input)
 
-    @dp.message(F.text)
+    @dp.message(F.text | F.photo)
     async def chat(message: Message, bot: Bot) -> None:
-        if not message.from_user or not message.text:
+        if not message.from_user:
             return
 
-        user_text = message.text.strip()
-        if not user_text:
-            return
+        user_text = message_text(message)
 
         if message.chat.type in GROUP_CHAT_TYPES:
             current_bot_id, username = await cache_bot_profile(bot)
@@ -307,30 +351,38 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             if not mentioned and not replied_to_bot:
                 return
 
+            image_input = await image_from_message(message, bot)
+            user_text = prompt_for_request(user_text, image_input)
             if not user_text:
                 await message.answer(f"Напишите вопрос после @{username}.")
                 return
+        else:
+            image_input = await image_from_message(message, bot)
+            user_text = prompt_for_request(user_text, image_input)
+            if not user_text:
+                return
 
-        await respond_to_message(message, bot, user_text)
+        await respond_to_message(message, bot, user_text, image_input)
 
-    @dp.guest_message(F.text)
+    @dp.guest_message(F.text | F.photo)
     async def guest_chat(message: Message, bot: Bot) -> None:
-        if not message.text:
-            return
-
         current_bot_id, username = await cache_bot_profile(bot)
         if not username:
             return
 
+        image_input = await image_from_message(message, bot)
         _, instruction = remove_bot_mention(message, username, current_bot_id)
-        user_text = contextual_prompt(instruction, replied_text(message))
+        user_text = prompt_for_request(
+            contextual_prompt(instruction, replied_text(message)),
+            image_input,
+        )
         if not user_text:
             await answer_guest(message, f"Напишите вопрос после @{username}.")
             return
 
         session = sessions[guest_session_key(message)]
         try:
-            answer = await generate_answer(user_text, session)
+            answer = await generate_answer(user_text, session, image_input)
         except OpenAIError:
             logging.exception("OpenAI API error for guest query")
             await answer_guest(
@@ -347,6 +399,6 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
 
     @dp.message()
     async def unsupported_message(message: Message) -> None:
-        await message.answer("Пока я понимаю только текстовые сообщения.")
+        await message.answer("Пока я понимаю текстовые сообщения и обычные Telegram-фото.")
 
     return dp

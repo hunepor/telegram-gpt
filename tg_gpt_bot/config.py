@@ -42,6 +42,7 @@ class AppSettings:
     summary_batch_messages: int
     summary_max_chars: int
     summary_max_output_tokens: int
+    image_detail: str
 
 
 def required_env(name: str) -> str:
@@ -75,6 +76,19 @@ def env_bool(name: str, default: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on", "да"}
 
 
+def env_choice(name: str, default: str, choices: set[str]) -> str:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    value = raw_value.strip().lower()
+    if value not in choices:
+        allowed = ", ".join(sorted(choices))
+        raise RuntimeError(f"Переменная {name} должна быть одной из: {allowed}")
+
+    return value
+
+
 def load_settings() -> AppSettings:
     model = os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
 
@@ -98,4 +112,5 @@ def load_settings() -> AppSettings:
         summary_batch_messages=env_int("SUMMARY_BATCH_MESSAGES", 6),
         summary_max_chars=env_int("SUMMARY_MAX_CHARS", 900),
         summary_max_output_tokens=env_int("SUMMARY_MAX_OUTPUT_TOKENS", 220),
+        image_detail=env_choice("IMAGE_DETAIL", "low", {"auto", "high", "low"}),
     )
