@@ -146,6 +146,35 @@ sudo -u telegram-gpt /opt/telegram-gpt/.venv/bin/pip install -r /opt/telegram-gp
 sudo systemctl restart telegram-gpt
 ```
 
+### Деплой с локальной машины по SSH
+
+Для обновления VPS из локального клона сначала отправьте нужную ветку в `origin`.
+Убедитесь, что локальные изменения закоммичены, а SSH-пользователь может читать
+репозиторий на сервере и перезапускать сервис через `sudo systemctl`.
+
+Задайте адрес VPS и запустите скрипт из каталога репозитория:
+
+```bash
+SSH_TARGET=telegram-gpt@your-vps.example bash scripts/deploy-ssh.sh
+```
+
+При необходимости можно указать SSH-порт, ключ, каталог приложения или имя сервиса:
+
+```bash
+SSH_TARGET=telegram-gpt@your-vps.example \\
+SSH_PORT=2222 \\
+SSH_KEY=~/.ssh/id_ed25519 \\
+APP_DIR=/opt/telegram-gpt \\
+bash scripts/deploy-ssh.sh
+```
+
+Скрипт проверит чистоту локальной рабочей копии, обновит на сервере ту же ветку
+из `origin`, установит зависимости и перезапустит `systemd`-сервис. `.env` и база
+данных остаются на VPS.
+
+База балансов и платежей хранится в `/var/lib/telegram-gpt/bot.db`. Каталог создаётся
+через `systemd` и не удаляется при обновлении кода.
+
 ## Запуск в Docker
 
 Сначала создайте и заполните `.env`:
