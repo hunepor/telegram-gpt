@@ -23,7 +23,11 @@ from .memory import (
 )
 from .openai_memory import refresh_summary_if_needed
 from .telegram_utils import answer_long, split_for_telegram
-from .web_search import search_citations, search_query_from_text
+from .web_search import (
+    contains_web_search_trigger,
+    search_citations,
+    search_query_from_text,
+)
 
 
 GROUP_CHAT_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP}
@@ -376,18 +380,30 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             if not mentioned and not replied_to_bot:
                 return
 
+            use_web_search = contains_web_search_trigger(user_text)
             image_input = await image_from_message(message, bot)
             user_text = prompt_for_request(user_text, image_input)
             if not user_text:
                 await message.answer(f"Напишите вопрос после @{username}.")
                 return
+            if use_web_search:
+                user_text = contextual_prompt(user_text, replied_text(message))
         else:
+            use_web_search = contains_web_search_trigger(user_text)
             image_input = await image_from_message(message, bot)
             user_text = prompt_for_request(user_text, image_input)
             if not user_text:
                 return
+            if use_web_search:
+                user_text = contextual_prompt(user_text, replied_text(message))
 
-        await respond_to_message(message, bot, user_text, image_input)
+        await respond_to_message(
+            message,
+            bot,
+            user_text,
+            image_input,
+            use_web_search=use_web_search,
+        )
 
     @dp.guest_message(F.text | F.photo)
     async def guest_chat(message: Message, bot: Bot) -> None:
@@ -398,6 +414,7 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
         image_input = await image_from_message(message, bot)
         _, instruction = remove_bot_mention(message, username, current_bot_id)
         search_query = search_query_from_text(instruction)
+        use_web_search = search_query is not None or contains_web_search_trigger(instruction)
         instruction = search_query if search_query is not None else instruction
         user_text = prompt_for_request(
             contextual_prompt(instruction, replied_text(message)),
@@ -413,7 +430,7 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
                 user_text,
                 session,
                 image_input,
-                use_web_search=search_query is not None,
+                use_web_search=use_web_search,
             )
         except OpenAIError:
             logging.exception("OpenAI API error for guest query")
