@@ -14,6 +14,7 @@ from tg_gpt_bot.handlers import build_dispatcher
 
 BOT_COMMANDS = [
     BotCommand(command="ask", description="Задать вопрос"),
+    BotCommand(command="search", description="Найти ответ в интернете"),
     BotCommand(command="start", description="Начать диалог заново"),
     BotCommand(command="reset", description="Очистить память диалога"),
     BotCommand(command="caveman", description="Включить короткие ответы"),

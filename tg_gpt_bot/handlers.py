@@ -23,6 +23,7 @@ from .memory import (
 )
 from .openai_memory import refresh_summary_if_needed
 from .telegram_utils import answer_long, split_for_telegram
+from .web_search import search_citations, search_query_from_text
 
 
 GROUP_CHAT_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP}
@@ -171,6 +172,7 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
         user_text: str,
         session: UserSession,
         image_input: ImageInput | None = None,
+        use_web_search: bool = False,
     ) -> str:
         mode_settings = settings_for(session, app_settings)
         input_messages = build_input_messages(session, mode_settings, user_text)
@@ -187,12 +189,23 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
                 ],
             }
 
-        response = await openai_client.responses.create(
-            model=app_settings.model,
-            input=input_messages,
-            max_output_tokens=mode_settings.max_output_tokens,
-        )
+        request_params = {
+            "model": app_settings.model,
+            "input": input_messages,
+            "max_output_tokens": mode_settings.max_output_tokens,
+        }
+        if use_web_search:
+            request_params["tools"] = [{"type": "web_search", "search_context_size": "low"}]
+            request_params["tool_choice"] = "required"
+
+        response = await openai_client.responses.create(**request_params)
         answer = (response.output_text or "").strip()
+        if use_web_search:
+            citations = search_citations(response)
+            if citations:
+                answer += "\n\nИсточники:\n" + "\n".join(
+                    f"[{title}]({url})" for title, url in citations
+                )
         if not answer:
             answer = "Ответ получился пустым. Попробуйте переформулировать сообщение."
 
@@ -283,6 +296,7 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
             "/normal - вернуться к обычному режиму\n"
             "/mode - показать текущий режим\n"
             "/ask вопрос - задать вопрос или обработать reply, включая фото\n"
+            "/search вопрос - искать ответ в интернете\n"
             "/help - показать подсказку"
         )
 
@@ -334,6 +348,17 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
 
         await respond_to_message(message, bot, user_text, image_input)
 
+    @dp.message(Command("search"))
+    async def search(message: Message, command: CommandObject, bot: Bot) -> None:
+        user_text = contextual_prompt(command.args or "", replied_text(message))
+        if not user_text:
+            await message.answer(
+                "Добавьте запрос после команды или отправьте /search ответом на сообщение."
+            )
+            return
+
+        await respond_to_message(message, bot, user_text, use_web_search=True)
+
     @dp.message(F.text | F.photo)
     async def chat(message: Message, bot: Bot) -> None:
         if not message.from_user:
@@ -372,6 +397,8 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
 
         image_input = await image_from_message(message, bot)
         _, instruction = remove_bot_mention(message, username, current_bot_id)
+        search_query = search_query_from_text(instruction)
+        instruction = search_query if search_query is not None else instruction
         user_text = prompt_for_request(
             contextual_prompt(instruction, replied_text(message)),
             image_input,
@@ -382,7 +409,12 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
 
         session = sessions[guest_session_key(message)]
         try:
-            answer = await generate_answer(user_text, session, image_input)
+            answer = await generate_answer(
+                user_text,
+                session,
+                image_input,
+                use_web_search=search_query is not None,
+            )
         except OpenAIError:
             logging.exception("OpenAI API error for guest query")
             await answer_guest(
