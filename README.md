@@ -138,39 +138,39 @@ sudo systemctl restart telegram-gpt
 sudo systemctl stop telegram-gpt
 ```
 
-Обновление после новых коммитов:
-
-```bash
-sudo -u telegram-gpt git -C /opt/telegram-gpt pull --ff-only
-sudo -u telegram-gpt /opt/telegram-gpt/.venv/bin/pip install -r /opt/telegram-gpt/requirements.txt
-sudo systemctl restart telegram-gpt
-```
+Для обновления используйте локальный SSH-деплой ниже. Каталог `/opt/telegram-gpt`
+может оставаться обычным checkout для обслуживания, но работающий сервис будет
+запускать отдельный релиз из `/opt/telegram-gpt-deploy/current`.
 
 ### Деплой с локальной машины по SSH
 
-Для обновления VPS из локального клона сначала отправьте нужную ветку в `origin`.
-Убедитесь, что локальные изменения закоммичены, а SSH-пользователь может читать
-репозиторий на сервере и перезапускать сервис через `sudo systemctl`.
+Скрипт передаёт по SSH архив текущего локального коммита. Git и доступ к GitHub на VPS
+не нужны. Изменения должны быть закоммичены; незакоммиченные файлы в релиз не попадут.
+SSH-пользователь должен быть `root`, потому что скрипт настраивает systemd и
+перезапускает сервис.
 
-Задайте адрес VPS и запустите скрипт из каталога репозитория:
+Запускайте из локального клона нужной ветки:
 
 ```bash
-SSH_TARGET=telegram-gpt@your-vps.example bash scripts/deploy-ssh.sh
+SSH_TARGET=root@your-vps.example bash scripts/deploy-ssh.sh
 ```
 
-При необходимости можно указать SSH-порт, ключ, каталог приложения или имя сервиса:
+По умолчанию скрипт хранит релизы в `/opt/telegram-gpt-deploy`, берёт настройки из
+`/etc/telegram-gpt/bot.env` и управляет сервисом `telegram-gpt`. Он собирает
+релиз из `HEAD`, передаёт его по SSH, устанавливает зависимости на VPS, переключает
+символическую ссылку `current` и перезапускает сервис. При ошибке запуска скрипт
+возвращает предыдущую ссылку и перезапускает предыдущий релиз. `.env` и база находятся
+вне каталогов релизов.
+
+При необходимости можно задать SSH-порт, ключ или другой каталог релизов:
 
 ```bash
-SSH_TARGET=telegram-gpt@your-vps.example \\
-SSH_PORT=2222 \\
-SSH_KEY=~/.ssh/id_ed25519 \\
-APP_DIR=/opt/telegram-gpt \\
+SSH_TARGET=root@your-vps.example \
+SSH_PORT=2222 \
+SSH_KEY=~/.ssh/id_ed25519 \
+APP_DIR=/opt/telegram-gpt-deploy \
 bash scripts/deploy-ssh.sh
 ```
-
-Скрипт проверит чистоту локальной рабочей копии, обновит на сервере ту же ветку
-из `origin`, установит зависимости и перезапустит `systemd`-сервис. `.env` и база
-данных остаются на VPS.
 
 База балансов и платежей хранится в `/var/lib/telegram-gpt/bot.db`. Каталог создаётся
 через `systemd` и не удаляется при обновлении кода.
