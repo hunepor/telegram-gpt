@@ -259,12 +259,18 @@ def build_dispatcher(openai_client: AsyncOpenAI, app_settings: AppSettings) -> D
         bot: Bot,
         user_text: str,
         image_input: ImageInput | None = None,
+        use_web_search: bool = False,
     ) -> None:
         session = sessions[session_key(message)]
         await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
         try:
-            answer = await generate_answer(user_text, session, image_input)
+            answer = await generate_answer(
+                user_text,
+                session,
+                image_input,
+                use_web_search=use_web_search,
+            )
         except OpenAIError:
             logging.exception("OpenAI API error")
             await message.answer(
